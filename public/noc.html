@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+<body>
+<h2>NOC</h2>
+<button id="acceptBtn" style="display: none;">Accept Call</button>
+<p id="status">Waiting for calls...</p>
+<div id="log"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+// Polyfill for older browsers
+if (!navigator.mediaDevices) {
+  navigator.mediaDevices = {};
+}
+if (!navigator.mediaDevices.getUserMedia) {
+  navigator.mediaDevices.getUserMedia = function(constraints) {
+    const getUserMedia = navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia;
+    if (!getUserMedia) {
+      return Promise.reject(new Error('getUserMedia is not implemented in this browser'));
+    }
+    return new Promise((resolve, reject) => {
+      getUserMedia.call(navigator, constraints, resolve, reject);
+    });
+  };
+}
+
+const ws = io();
+ws.emit("join", "noc");
+
+const logDiv = document.getElementById("log");
+const status = document.getElementById("status");
+
+let pc, localStream;
+
+function log(msg){ logDiv.innerHTML += msg + "<br>"; }
+
+document.getElementById("acceptBtn").onclick = async () => {
+  // Prevent multiple clicks
+  const acceptBtn = document.getElementById("acceptBtn");
+  acceptBtn.disabled = true;
+  acceptBtn.style.display = "none";
+
+  try {
+    status.innerText = "Setting up connection...";
+    log("Checking media devices availability...");
+
+    // Check if media devices are available
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error("Media devices not available. Please use HTTPS or localhost");
+    }
+
+    log("Requesting microphone access...");
+    localStream = await navigator.mediaDevices.getUserMedia({ 
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      } 
+    });
+    log("Microphone access granted");
+
+    pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+
+    // Add connection state monitoring
+    pc.onconnectionstatechange = () => {
+      log(`Connection state: ${pc.connectionState}`);
+      if (pc.connectionState === 'connected') {
+        status.innerText = "Voice call connected";
+        log("WebRTC connection established successfully!");
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      log(`ICE connection state: ${pc.iceConnectionState}`);
+    };
+    
+    localStream.getTracks().forEach(track => {
+      pc.addTrack(track, localStream);
+      log("Added local audio track");
+    });
+
+    const audio = document.createElement("audio");
+    audio.autoplay = true;
+    audio.controls = true; // Add controls for debugging
+    pc.ontrack = e => {
+      log("Received remote audio stream");
+      audio.srcObject = e.streams[0];
+      status.innerText = "Connected to User";
+      log("Voice connection established - audio element created");
+    };
+    document.body.appendChild(audio);
+
+    pc.onicecandidate = e => {
+      if (e.candidate) {
+        // Send the complete candidate object, not just the candidate string
+        ws.emit("signal", { to: "user", data: {
+          candidate: e.candidate.candidate,
+          sdpMid: e.candidate.sdpMid,
+          sdpMLineIndex: e.candidate.sdpMLineIndex
+        }});
+        log("Sent ICE candidate to user");
+      } else {
+        log("ICE gathering completed");
+      }
+    };
+
+    startSTT("NOC said: ");
+    ws.emit("accept_call");
+    log("Call accepted, waiting for offer...");
+  } catch (error) {
+    log("Error setting up call: " + error.message);
+    status.innerText = "Error setting up call";
+    // Re-enable button on error
+    acceptBtn.disabled = false;
+    acceptBtn.style.display = "block";
+  }
+};
+
+ws.on("incoming_call", () => {
+  status.innerText = "Incoming call from User";
+  document.getElementById("acceptBtn").style.display = "block";
+  log("Incoming call - click Accept to answer");
+});
+
+ws.on("signal", async data => {
+  if (!pc) {
+    log("ERROR: Received signal but no peer connection exists");
+    return;
+  }
+
+  try {
+    if (data.type === "offer") {
+      log("Received offer from user");
+      log("Offer SDP: " + JSON.stringify(data).substring(0, 100) + "...");
+      
+      await pc.setRemoteDescription(new RTCSessionDescription(data));
+      log("Set remote description (offer)");
+      
+      const answer = await pc.createAnswer();
+      log("Created answer");
+      
+      await pc.setLocalDescription(answer);
+      log("Set local description (answer)");
+      
+      ws.emit("signal", { to: "user", data: answer });
+      log("Sent answer to user");
+    }
+
+    if (data.candidate) {
+      // Validate that data.candidate is a proper ICE candidate object
+      if (typeof data.candidate === 'string' && data.candidate.startsWith('candidate:')) {
+        // Handle string candidates (legacy format)
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate({
+            candidate: data.candidate,
+            sdpMid: data.sdpMid || null,
+            sdpMLineIndex: data.sdpMLineIndex || 0
+          }));
+          log("Added ICE candidate from user (string format)");
+        } catch (candidateError) {
+          log("Error adding string ICE candidate: " + candidateError.message);
+        }
+      } else if (data.candidate && typeof data.candidate === 'object') {
+        // Handle object candidates (proper format)
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+          log("Added ICE candidate from user (object format)");
+        } catch (candidateError) {
+          log("Error adding object ICE candidate: " + candidateError.message);
+        }
+      } else {
+        log("Received invalid ICE candidate data: " + JSON.stringify(data.candidate));
+      }
+    }
+  } catch (error) {
+    log("Error handling signal: " + error.message);
+    log("Stack: " + error.stack);
+  }
+});
+
+// Speech-to-text
+function startSTT(prefix){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+  const r = new SR();
+  r.continuous = true;
+  r.interimResults = false;
+  r.onresult = e => log(prefix + e.results[e.results.length-1][0].transcript);
+  r.start();
+}
+</script>
+</body>
+</html>
