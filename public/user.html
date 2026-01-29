@@ -130,6 +130,58 @@ body::before {
   left: 100%;
 }
 
+/* End call button styling */
+#endCallBtn {
+  background: linear-gradient(45deg, #dc3545, #c82333);
+  border: none;
+  border-radius: 50px;
+  padding: 25px 60px;
+  font-size: 1.8em;
+  font-weight: bold;
+  color: white;
+  cursor: pointer;
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+  transition: all 0.3s ease;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  position: relative;
+  overflow: hidden;
+  margin-top: 20px;
+}
+
+#endCallBtn:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.4);
+  background: linear-gradient(45deg, #c82333, #a71e2a);
+}
+
+#endCallBtn:active {
+  transform: translateY(-2px);
+}
+
+#endCallBtn:disabled {
+  background: #666;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+/* End button shine effect */
+#endCallBtn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+  transition: left 0.5s;
+}
+
+#endCallBtn:hover::before {
+  left: 100%;
+}
+
 /* Status styling */
 #status {
   color: white;
@@ -170,6 +222,7 @@ body::before {
 
 <div class="main-container">
   <button id="callBtn">Call NOC</button>
+  <button id="endCallBtn" style="display: none;">End Call</button>
   <p id="status">Idle</p>
   <div id="log"></div>
 </div>
@@ -235,6 +288,8 @@ document.getElementById("callBtn").onclick = async () => {
       // log(`Connection state: ${pc.connectionState}`);
       if (pc.connectionState === 'connected') {
         status.innerText = "Voice call connected";
+        // Show end call button when connected
+        document.getElementById("endCallBtn").style.display = "block";
         // log("WebRTC connection established successfully!");
       }
     };
@@ -280,6 +335,42 @@ document.getElementById("callBtn").onclick = async () => {
     status.innerText = "Error starting call";
     // Re-enable button on error
     callBtn.disabled = false;
+  }
+};
+
+// End call functionality
+document.getElementById("endCallBtn").onclick = async () => {
+  try {
+    // Close peer connection
+    if (pc) {
+      pc.close();
+      pc = null;
+    }
+
+    // Stop local stream
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      localStream = null;
+    }
+
+    // Remove audio element
+    const audioElements = document.querySelectorAll('audio');
+    audioElements.forEach(audio => audio.remove());
+
+    // Reset UI
+    status.innerText = "Call ended";
+    document.getElementById("callBtn").disabled = false;
+    document.getElementById("endCallBtn").style.display = "none";
+
+    // Notify server
+    ws.emit("end_call");
+
+    // Reset status after a moment
+    setTimeout(() => {
+      status.innerText = "Idle";
+    }, 2000);
+  } catch (error) {
+    status.innerText = "Error ending call";
   }
 };
 
@@ -343,6 +434,39 @@ ws.on("signal", async data => {
   } catch (error) {
     // log("Error handling signal: " + error.message);
     // log("Stack: " + error.stack);
+  }
+});
+
+// Handle call ended by NOC
+ws.on("call_ended", () => {
+  try {
+    // Close peer connection
+    if (pc) {
+      pc.close();
+      pc = null;
+    }
+
+    // Stop local stream
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      localStream = null;
+    }
+
+    // Remove audio element
+    const audioElements = document.querySelectorAll('audio');
+    audioElements.forEach(audio => audio.remove());
+
+    // Reset UI
+    status.innerText = "Call ended by NOC";
+    document.getElementById("callBtn").disabled = false;
+    document.getElementById("endCallBtn").style.display = "none";
+
+    // Reset status after a moment
+    setTimeout(() => {
+      status.innerText = "Idle";
+    }, 2000);
+  } catch (error) {
+    status.innerText = "Error handling call end";
   }
 });
 
